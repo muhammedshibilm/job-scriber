@@ -1,12 +1,28 @@
 #!/usr/bin/env python3
 """
-Daily fresher / 0-1 yr Software Engineer job fetcher.
+Daily fresher / 0-1 yr Software Engineer job aggregator (India only).
 
-Uses the Adzuna Jobs API (https://developer.adzuna.com/) which legally
-aggregates listings from LinkedIn, Indeed, and many other job boards.
-Direct scraping of linkedin.com or indeed.com is against their Terms
-of Service and gets IPs/accounts blocked -- this script avoids that by
-using an official, free, ToS-compliant API instead.
+IMPORTANT — why this doesn't scrape linkedin.com, indeed.com, or
+unstop.com directly:
+  - LinkedIn and Indeed explicitly prohibit scraping in their Terms
+    of Service and actively block/ban IPs and accounts that try it.
+  - Unstop does not publish a documented public API for third-party
+    use either.
+  Pulling data from those sites without authorization is both a ToS
+  violation and technically unreliable (constant blocking, CAPTCHAs,
+  legal risk).
+
+Instead this script combines MULTIPLE free, official, ToS-compliant
+job-search APIs, each of which itself aggregates listings from many
+underlying boards and company career sites (including many that also
+post to LinkedIn/Indeed):
+
+  - Adzuna   (https://developer.adzuna.com/)
+  - Jooble   (https://jooble.org/api/about)
+
+Adding another legitimate API later (e.g. one you get a key for) is
+just one more function following the same pattern as
+`fetch_adzuna()` / `fetch_jooble()` below, registered in SOURCES.
 
 Outputs, per run:
   data/YYYY-MM-DD.json
@@ -17,6 +33,7 @@ Outputs, per run:
 Required environment variables (set as GitHub Actions secrets):
   ADZUNA_APP_ID
   ADZUNA_APP_KEY
+  JOOBLE_API_KEY
 """
 
 import os
@@ -32,54 +49,36 @@ import requests
 
 ADZUNA_APP_ID = os.environ.get("ADZUNA_APP_ID")
 ADZUNA_APP_KEY = os.environ.get("ADZUNA_APP_KEY")
+JOOBLE_API_KEY = os.environ.get("JOOBLE_API_KEY")
 
-if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
-    print("ERROR: ADZUNA_APP_ID / ADZUNA_APP_KEY env vars are required.")
-    sys.exit(1)
+# Adzuna country codes — India only
+ADZUNA_COUNTRIES = ["in"]
 
-# Adzuna country codes: "in" = India, "us" = United States
-COUNTRIES = ["in", "us"]
+# Jooble location strings to query per "country" — India only
+JOOBLE_LOCATIONS = {
+    "India": "India",
+}
 
-# Search terms cast a wide net; we filter precisely afterwards
 SEARCH_TERMS = ["software engineer", "software developer"]
 
 RESULTS_PER_PAGE = 50
-MAX_PAGES_PER_QUERY = 3  # keep well inside free tier limits
+MAX_PAGES_PER_QUERY = 3  # keep well inside free-tier quotas
 
-# Titles/descriptions containing these are treated as "fresher / 0-1 yr"
 FRESHER_INCLUDE = re.compile(
     r"\b(fresher|freshers|entry[- ]?level|graduate|new ?grad|trainee|"
     r"junior|jr\.?|intern(ship)?|0-1 ?year|associate software engineer)\b",
     re.IGNORECASE,
 )
-
-# Titles/descriptions containing these are excluded even if the above matched
 SENIOR_EXCLUDE = re.compile(
     r"\b(senior|sr\.?|lead|principal|staff|manager|architect|"
     r"[2-9]\+? ?years?|[3-9] ?yrs?)\b",
     re.IGNORECASE,
 )
-
 KERALA_HINTS = re.compile(
     r"\b(kerala|thiruvananthapuram|trivandrum|kochi|cochin|kozhikode|"
     r"calicut|thrissur|kollam|kannur|palakkad)\b",
     re.IGNORECASE,
 )
-
-
-def adzuna_search(country: str, what: str, page: int):
-    url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
-    params = {
-        "app_id": ADZUNA_APP_ID,
-        "app_key": ADZUNA_APP_KEY,
-        "results_per_page": RESULTS_PER_PAGE,
-        "what": what,
-        "content-type": "application/json",
-        "sort_by": "date",
-    }
-    resp = requests.get(url, params=params, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
 
 
 def is_fresher_role(title: str, description: str) -> bool:
@@ -96,49 +95,55 @@ def short_summary(description: str, max_len: int = 220) -> str:
     return text[:max_len].rsplit(" ", 1)[0] + "..."
 
 
-def normalize(job: dict, country: str) -> dict:
-    title = job.get("title", "")
-    description = job.get("description", "")
-    company = (job.get("company") or {}).get("display_name", "")
-    location = (job.get("location") or {}).get("display_name", "")
-    apply_link = job.get("redirect_url", "")
-    # Adzuna doesn't expose a direct company homepage; give a company
-    # search link on Adzuna itself as a stable "company link".
-    company_link = (
-        f"https://www.adzuna.{'co.in' if country == 'in' else 'com'}/search"
-        f"?q={requests.utils.quote(company)}"
-        if company
-        else ""
-    )
-
+def make_record(source, title, company, location, country, description,
+                 apply_link, company_link, posted_date, salary_min=None,
+                 salary_max=None):
     return {
+        "source": source,
         "date_fetched": str(date.today()),
-        "posted_date": job.get("created", ""),
+        "posted_date": posted_date or "",
         "title": title,
         "company": company,
         "location": location,
-        "country": "India" if country == "in" else "United States",
+        "country": country,
         "in_kerala": bool(KERALA_HINTS.search(f"{title} {description} {location}")),
         "experience_level": "Fresher / 0-1 yr",
         "short_description": short_summary(description),
         "apply_link": apply_link,
         "company_link": company_link,
-        "salary_min": job.get("salary_min"),
-        "salary_max": job.get("salary_max"),
+        "salary_min": salary_min,
+        "salary_max": salary_max,
     }
 
 
-def fetch_all() -> list:
-    results = []
-    seen_ids = set()
+# ---------------------------------------------------------------------
+# Source: Adzuna
+# ---------------------------------------------------------------------
+def fetch_adzuna() -> list:
+    if not ADZUNA_APP_ID or not ADZUNA_APP_KEY:
+        print("[skip] Adzuna: ADZUNA_APP_ID / ADZUNA_APP_KEY not set")
+        return []
 
-    for country in COUNTRIES:
+    results = []
+    for country in ADZUNA_COUNTRIES:
+        country_name = "India"
         for term in SEARCH_TERMS:
             for page in range(1, MAX_PAGES_PER_QUERY + 1):
+                url = f"https://api.adzuna.com/v1/api/jobs/{country}/search/{page}"
+                params = {
+                    "app_id": ADZUNA_APP_ID,
+                    "app_key": ADZUNA_APP_KEY,
+                    "results_per_page": RESULTS_PER_PAGE,
+                    "what": term,
+                    "content-type": "application/json",
+                    "sort_by": "date",
+                }
                 try:
-                    data = adzuna_search(country, term, page)
-                except requests.HTTPError as e:
-                    print(f"[warn] {country}/{term}/page{page}: {e}")
+                    resp = requests.get(url, params=params, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json()
+                except requests.RequestException as e:
+                    print(f"[warn] Adzuna {country}/{term}/page{page}: {e}")
                     break
 
                 jobs = data.get("results", [])
@@ -146,53 +151,152 @@ def fetch_all() -> list:
                     break
 
                 for job in jobs:
-                    job_id = job.get("id")
-                    if job_id in seen_ids:
-                        continue
-
                     title = job.get("title", "")
                     description = job.get("description", "")
                     if not is_fresher_role(title, description):
                         continue
-
-                    seen_ids.add(job_id)
-                    results.append(normalize(job, country))
-
-                time.sleep(0.5)  # be polite to the API
-
-    # Kerala / India results first, then rest of India, then US
-    results.sort(key=lambda r: (r["country"] != "India", not r["in_kerala"]))
+                    company = (job.get("company") or {}).get("display_name", "")
+                    location = (job.get("location") or {}).get("display_name", "")
+                    company_link = (
+                        f"https://www.adzuna.co.in/search?q={requests.utils.quote(company)}"
+                        if company else ""
+                    )
+                    results.append(make_record(
+                        source="Adzuna",
+                        title=title,
+                        company=company,
+                        location=location,
+                        country=country_name,
+                        description=description,
+                        apply_link=job.get("redirect_url", ""),
+                        company_link=company_link,
+                        posted_date=job.get("created", ""),
+                        salary_min=job.get("salary_min"),
+                        salary_max=job.get("salary_max"),
+                    ))
+                time.sleep(0.5)
     return results
+
+
+# ---------------------------------------------------------------------
+# Source: Jooble
+# ---------------------------------------------------------------------
+def fetch_jooble() -> list:
+    if not JOOBLE_API_KEY:
+        print("[skip] Jooble: JOOBLE_API_KEY not set")
+        return []
+
+    results = []
+    url = f"https://jooble.org/api/{JOOBLE_API_KEY}"
+
+    for country_name, location in JOOBLE_LOCATIONS.items():
+        for term in SEARCH_TERMS:
+            for page in range(1, MAX_PAGES_PER_QUERY + 1):
+                payload = {"keywords": term, "location": location, "page": str(page)}
+                try:
+                    resp = requests.post(url, json=payload, timeout=30)
+                    resp.raise_for_status()
+                    data = resp.json()
+                except requests.RequestException as e:
+                    print(f"[warn] Jooble {country_name}/{term}/page{page}: {e}")
+                    break
+
+                jobs = data.get("jobs", [])
+                if not jobs:
+                    break
+
+                for job in jobs:
+                    title = job.get("title", "")
+                    description = job.get("snippet", "")
+                    if not is_fresher_role(title, description):
+                        continue
+                    company = job.get("company", "")
+                    results.append(make_record(
+                        source="Jooble",
+                        title=title,
+                        company=company,
+                        location=job.get("location", ""),
+                        country=country_name,
+                        description=description,
+                        apply_link=job.get("link", ""),
+                        company_link="",  # Jooble doesn't expose one
+                        posted_date=job.get("updated", ""),
+                        salary_min=None,
+                        salary_max=None,
+                    ))
+                time.sleep(0.5)
+    return results
+
+
+# Register every source function here. Add more as you get API keys
+# for other legitimate aggregators (e.g. Careerjet, USAJobs, RemoteOK).
+SOURCES = [
+    fetch_adzuna,
+    fetch_jooble,
+]
+
+
+def dedupe(jobs: list) -> list:
+    seen = set()
+    deduped = []
+    for job in jobs:
+        key = (
+            job["title"].strip().lower(),
+            job["company"].strip().lower(),
+            job["location"].strip().lower(),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(job)
+    return deduped
+
+
+def fetch_all() -> list:
+    all_jobs = []
+    for source_fn in SOURCES:
+        try:
+            jobs = source_fn()
+            print(f"[info] {source_fn.__name__}: {len(jobs)} fresher-role matches")
+            all_jobs.extend(jobs)
+        except Exception as e:
+            print(f"[error] {source_fn.__name__} failed: {e}")
+
+    all_jobs = dedupe(all_jobs)
+    # Kerala listings first
+    all_jobs.sort(key=lambda r: not r["in_kerala"])
+    return all_jobs
 
 
 def write_outputs(jobs: list, out_dir: Path):
     out_dir.mkdir(parents=True, exist_ok=True)
     today_str = str(date.today())
 
-    json_path = out_dir / f"{today_str}.json"
-    csv_path = out_dir / f"{today_str}.csv"
-    latest_json = out_dir / "latest.json"
-    latest_csv = out_dir / "latest.csv"
-
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(jobs, f, indent=2, ensure_ascii=False)
-    with open(latest_json, "w", encoding="utf-8") as f:
-        json.dump(jobs, f, indent=2, ensure_ascii=False)
-
     fieldnames = [
-        "date_fetched", "posted_date", "title", "company", "location",
-        "country", "in_kerala", "experience_level", "short_description",
-        "apply_link", "company_link", "salary_min", "salary_max",
+        "source", "date_fetched", "posted_date", "title", "company",
+        "location", "country", "in_kerala", "experience_level",
+        "short_description", "apply_link", "company_link",
+        "salary_min", "salary_max",
     ]
-    for path in (csv_path, latest_csv):
-        with open(path, "w", newline="", encoding="utf-8") as f:
+
+    for json_path in (out_dir / f"{today_str}.json", out_dir / "latest.json"):
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump(jobs, f, indent=2, ensure_ascii=False)
+
+    for csv_path in (out_dir / f"{today_str}.csv", out_dir / "latest.csv"):
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(jobs)
 
-    print(f"Wrote {len(jobs)} jobs -> {json_path}, {csv_path}")
+    print(f"Wrote {len(jobs)} total jobs -> {out_dir}/{today_str}.json (+csv)")
 
 
 if __name__ == "__main__":
+    if not (ADZUNA_APP_ID and ADZUNA_APP_KEY) and not JOOBLE_API_KEY:
+        print("ERROR: set at least one source's API keys "
+              "(ADZUNA_APP_ID+ADZUNA_APP_KEY and/or JOOBLE_API_KEY).")
+        sys.exit(1)
+
     jobs = fetch_all()
     write_outputs(jobs, Path(__file__).resolve().parent.parent / "data")
