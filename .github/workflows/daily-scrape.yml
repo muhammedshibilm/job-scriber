@@ -1,0 +1,39 @@
+name: Daily Fresher Software Engineer Job Fetch
+
+on:
+  schedule:
+    # Runs every day at 03:00 UTC (~08:30 AM IST)
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}   # allows manual "Run workflow" trigger too
+
+permissions:
+  contents: write
+
+jobs:
+  fetch-jobs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run fetcher
+        env:
+          ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
+          ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
+        run: python scraper/fetch_jobs.py
+
+      - name: Commit and push new data
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "Daily job data: $(date +'%Y-%m-%d')"
+          git push
