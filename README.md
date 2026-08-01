@@ -1,22 +1,42 @@
-# Daily Fresher Software Engineer Job Feed (India + US)
+# Daily Fresher Software Engineer Job Feed (India)
 
 Fetches fresher / 0–1 year experience Software Engineer job listings
-(India — with Kerala highlighted — and US) once a day using GitHub
-Actions, and saves them as JSON + CSV.
+in India — with Kerala highlighted — once a day using GitHub Actions,
+and saves them as JSON + CSV, combined from multiple sources.
 
-## Why not scrape LinkedIn/Indeed directly?
+## Why not scrape LinkedIn/Indeed/Unstop directly?
 
 LinkedIn and Indeed both **prohibit automated scraping in their
 Terms of Service** and actively block/ban IPs and accounts that try.
-Instead, this project uses the **Adzuna Jobs API**, a free,
-official API that legally aggregates listings from LinkedIn, Indeed,
-and many other boards — so you get the same kind of data without the
-ToS/legal risk or getting blocked.
+Unstop doesn't publish a documented public API for third-party use
+either. Instead, this project combines **multiple free, official
+APIs** that legally aggregate listings from LinkedIn, Indeed, and
+hundreds of other boards/company career pages:
 
-## 1. Get free Adzuna API credentials
+- **Adzuna** — https://developer.adzuna.com/
+- **Jooble** — https://jooble.org/api/about
 
+Both are free to register for and designed for exactly this kind of
+use, so you get broad coverage without ToS/legal risk or getting
+blocked. The script is written so adding a third or fourth legitimate
+source later is just one more function (see `SOURCES` list in
+`fetch_jobs.py`) — for example Careerjet (has an affiliate API) or
+USAJobs (official US government jobs API) if you want even more
+US coverage.
+
+## 1. Get free API credentials
+
+**Adzuna**
 1. Sign up at https://developer.adzuna.com/
 2. Create an app to get an `app_id` and `app_key`.
+
+**Jooble**
+1. Request a free key at https://jooble.org/api/about
+2. You'll get a single API key.
+
+You can run with just one of these configured — the script skips
+any source whose keys aren't set — but using both gives noticeably
+wider coverage.
 
 ## 2. Add them as GitHub Secrets
 
@@ -24,6 +44,7 @@ In your repo: **Settings → Secrets and variables → Actions → New repositor
 
 - `ADZUNA_APP_ID`
 - `ADZUNA_APP_KEY`
+- `JOOBLE_API_KEY`
 
 ## 3. How it runs
 
@@ -47,6 +68,7 @@ Each run:
 
 | Field | Meaning |
 |---|---|
+| `source` | Which API the listing came from (Adzuna / Jooble) |
 | `title` | Job title |
 | `company` | Company name |
 | `location` | City/region |
@@ -65,6 +87,7 @@ Each run:
 pip install -r requirements.txt
 export ADZUNA_APP_ID=your_id
 export ADZUNA_APP_KEY=your_key
+export JOOBLE_API_KEY=your_key
 python scraper/fetch_jobs.py
 ```
 
