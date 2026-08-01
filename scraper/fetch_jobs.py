@@ -1,40 +1,4 @@
-#!/usr/bin/env python3
-"""
-Daily fresher / 0-1 yr Software Engineer job aggregator (India only).
 
-IMPORTANT — why this doesn't scrape linkedin.com, indeed.com, or
-unstop.com directly:
-  - LinkedIn and Indeed explicitly prohibit scraping in their Terms
-    of Service and actively block/ban IPs and accounts that try it.
-  - Unstop does not publish a documented public API for third-party
-    use either.
-  Pulling data from those sites without authorization is both a ToS
-  violation and technically unreliable (constant blocking, CAPTCHAs,
-  legal risk).
-
-Instead this script combines MULTIPLE free, official, ToS-compliant
-job-search APIs, each of which itself aggregates listings from many
-underlying boards and company career sites (including many that also
-post to LinkedIn/Indeed):
-
-  - Adzuna   (https://developer.adzuna.com/)
-  - Jooble   (https://jooble.org/api/about)
-
-Adding another legitimate API later (e.g. one you get a key for) is
-just one more function following the same pattern as
-`fetch_adzuna()` / `fetch_jooble()` below, registered in SOURCES.
-
-Outputs, per run:
-  data/YYYY-MM-DD.json
-  data/YYYY-MM-DD.csv
-  data/latest.json
-  data/latest.csv
-
-Required environment variables (set as GitHub Actions secrets):
-  ADZUNA_APP_ID
-  ADZUNA_APP_KEY
-  JOOBLE_API_KEY
-"""
 
 import os
 import re
