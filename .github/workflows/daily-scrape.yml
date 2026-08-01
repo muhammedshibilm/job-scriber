@@ -25,6 +25,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Run fetcher
+        timeout-minutes: 30   # scrapers sleep between requests
         env:
           ADZUNA_APP_ID: ${{ secrets.ADZUNA_APP_ID }}
           ADZUNA_APP_KEY: ${{ secrets.ADZUNA_APP_KEY }}
